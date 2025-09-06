@@ -19,6 +19,8 @@ export default function App() {
   const keys = useRef<Record<string, boolean>>({});
   const joyVec = useRef(new THREE.Vector2(0, 0));
 
+  const [evtCount, setEvtCount] = useState(0);
+
   const recenter = () => {
     if (!cameraRef.current) return;
     const cam = cameraRef.current;
@@ -282,26 +284,68 @@ export default function App() {
           gamma ?? 0
         ).toFixed(1)}`
       );
+      setEvtCount((c) => c + 1);
     };
+
+    // lắng nghe cả 2 loại
     window.addEventListener("deviceorientation", onOrientation, true);
-    return () =>
+    window.addEventListener(
+      "deviceorientationabsolute",
+      onOrientation as any,
+      true
+    );
+    return () => {
       window.removeEventListener("deviceorientation", onOrientation, true);
+      window.removeEventListener(
+        "deviceorientationabsolute",
+        onOrientation as any,
+        true
+      );
+    };
   }, []);
 
+  // --- thay hoàn toàn requestGyro
   const requestGyro = async () => {
+    setHud("requesting permission…");
     try {
+      // iOS 13+ needs permission
       const NeedsPerm =
         typeof (window as any).DeviceOrientationEvent !== "undefined" &&
         typeof (DeviceOrientationEvent as any).requestPermission === "function";
       if (NeedsPerm) {
         const st = await (DeviceOrientationEvent as any).requestPermission();
         if (st !== "granted") {
-          setDebugText("Permission denied");
+          setHud("permission denied (iOS)");
           return;
         }
+        // (tuỳ máy) xin motion luôn
+        if (
+          typeof (window as any).DeviceMotionEvent !== "undefined" &&
+          typeof (DeviceMotionEvent as any).requestPermission === "function"
+        ) {
+          try {
+            await (DeviceMotionEvent as any).requestPermission();
+          } catch {}
+        }
       }
+
+      // reset counter, bật chế độ gyro và chờ xem có event tới không
+      setEvtCount(0);
       enabledRef.current = true;
-      setHud("gyro enabled");
+      setHud("gyro ON — waiting events…");
+
+      // đợi tối đa 2000ms xem có event nào vào không
+      setTimeout(() => {
+        if (evtCount <= 0) {
+          setHud(
+            "no sensor events — check HTTPS / Permissions-Policy / open in Safari/Chrome"
+          );
+        } else {
+          setHud(`receiving events ✔ (${evtCount})`);
+        }
+      }, 2000);
+
+      // orientation lock (bỏ qua nếu không hỗ trợ)
       const orien: any = screen.orientation;
       if (orien?.lock && typeof orien.lock === "function") {
         try {
@@ -369,6 +413,18 @@ export default function App() {
           gap: 8,
         }}
       >
+        <div
+          style={{
+            position: "fixed",
+            left: 12,
+            top: 70,
+            zIndex: 1000,
+            display: "flex",
+            gap: 8,
+          }}
+        >
+          events:
+        </div>
         <button
           onClick={requestGyro}
           className="px-3 py-2 rounded-2xl bg-white/10 hover:bg-white/20 backdrop-blur border border-white/20 text-sm"

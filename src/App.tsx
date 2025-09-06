@@ -1,10 +1,13 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+
+// Quaternion bù -90° quanh trục X (chuẩn khi map DeviceOrientation -> camera)
 const QX_MINUS_90 = new THREE.Quaternion().setFromAxisAngle(
   new THREE.Vector3(1, 0, 0),
   -Math.PI / 2
 );
+
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -12,21 +15,25 @@ export default function App() {
   const controlsRef = useRef<OrbitControls | null>(null);
   const animRef = useRef<number | null>(null);
 
+  // Gyro
   const enabledRef = useRef(false);
-  const screenFixQ = useRef(new THREE.Quaternion());
+  const screenFixQ = useRef(new THREE.Quaternion()); // bù góc quay màn hình
   const euler = useRef(new THREE.Euler());
   const q = useRef(new THREE.Quaternion());
 
-  // const [debugText, _setDebugText] = useState("Tap Enable Gyro →");
+  // UI/debug
+  const [debugText, setDebugText] = useState("Tap Enable Gyro →");
   const [hud, setHud] = useState("init…");
+  const [evtCount, setEvtCount] = useState(0);
+
+  // Movement
   const keys = useRef<Record<string, boolean>>({});
   const joyVec = useRef(new THREE.Vector2(0, 0));
 
-  const [evtCount, setEvtCount] = useState(0);
-
+  // Recenter yaw
   const recenter = () => {
-    if (!cameraRef.current) return;
     const cam = cameraRef.current;
+    if (!cam) return;
     const dir = new THREE.Vector3();
     cam.getWorldDirection(dir);
     dir.y = 0;
@@ -38,21 +45,6 @@ export default function App() {
     );
     cam.quaternion.premultiply(invYaw);
   };
-
-  // ===== global error hooks (hiện hết lỗi ra console) =====
-  useEffect(() => {
-    const onErr = (e: ErrorEvent) =>
-      console.error("[window.onerror]", e.message, e.error);
-    const onRej = (e: PromiseRejectionEvent) =>
-      console.error("[unhandledrejection]", e.reason);
-    window.addEventListener("error", onErr);
-    window.addEventListener("unhandledrejection", onRej);
-    console.log("[App] mounted");
-    return () => {
-      window.removeEventListener("error", onErr);
-      window.removeEventListener("unhandledrejection", onRej);
-    };
-  }, []);
 
   const updateScreenFix = () => {
     const angleDeg =
@@ -69,77 +61,46 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!mountRef.current) {
-      console.log("[init] mountRef null");
-      return;
-    }
-
-    const mount = mountRef.current;
-    console.log("[init] mount size", mount.clientWidth, mount.clientHeight);
+    if (!mountRef.current) return;
 
     // Renderer
     const renderer = new THREE.WebGLRenderer({ antialias: true });
     renderer.setClearColor(0x20252b, 1);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
-    mount.appendChild(renderer.domElement);
+    mountRef.current.appendChild(renderer.domElement);
     rendererRef.current = renderer;
 
-    const gl = renderer.getContext();
-    if (!gl) {
-      console.error("[init] WebGL context FAILED");
-      setHud("WebGL context failed");
-      return;
-    }
-    console.log(
-      "[init] WebGL OK",
-      gl.getParameter(gl.VERSION),
-      gl.getParameter(gl.SHADING_LANGUAGE_VERSION)
-    );
-
-    // Scene & Camera
+    // Scene & camera
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(
       70,
-      mount.clientWidth / mount.clientHeight,
+      window.innerWidth / window.innerHeight,
       0.01,
       200
     );
-    camera.position.set(0, 2, 6); // lùi xa một chút để nhìn rõ
-    cameraRef.current = camera;
-
-    // Cube (đặt trước mặt camera luôn thấy)
-    const cube = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 1.5, 1.5),
-      new THREE.MeshBasicMaterial({ color: 0xff0000 })
-    );
-    cube.position.set(0, 1.2, -2); // trước mặt camera
-    scene.add(cube);
     camera.position.set(0, 1.6, 5);
     cameraRef.current = camera;
 
-    // Controls fallback
+    // Controls (fallback desktop)
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.autoRotate = true;
     controls.autoRotateSpeed = 1;
-    controls.target.copy(cube.position); // luôn nhìn vào cube
-    camera.lookAt(cube.position);
     controlsRef.current = controls;
 
-    // Helpers
+    // Helpers & lights
     scene.add(new THREE.GridHelper(60, 60, 0xffffff, 0x444444));
     const axes = new THREE.AxesHelper(3);
     axes.position.set(0, 1.2, 0);
     scene.add(axes);
 
-    // Lights (mạnh + helpers)
-    const amb = new THREE.AmbientLight(0xffffff, 1.2);
-    scene.add(amb);
+    scene.add(new THREE.AmbientLight(0xffffff, 1.2));
     const dir = new THREE.DirectionalLight(0xffffff, 1.2);
     dir.position.set(5, 10, 7);
     scene.add(dir);
     scene.add(new THREE.DirectionalLightHelper(dir, 1, 0xffee88));
+
     const point = new THREE.PointLight(0xffffff, 2.0, 0, 2);
     point.position.set(-3, 2, 2);
     scene.add(point);
@@ -153,50 +114,42 @@ export default function App() {
     ground.rotation.x = -Math.PI / 2;
     scene.add(ground);
 
-    // Cube (BasicMaterial -> luôn thấy)
-    // const cube = new THREE.Mesh(
-    //   new THREE.BoxGeometry(1.2, 1.2, 1.2),
-    //   new THREE.MeshBasicMaterial({ color: 0xffffff })
-    // );
-    // cube.position.set(0, 1.2, 0);
-    // scene.add(cube);
-
-    // Skybox (6 màu)
-    const sky = new THREE.Mesh(
-      new THREE.BoxGeometry(80, 80, 80),
-      [0xff6b6b, 0x4fd1c5, 0xf6ad55, 0x90cdf4, 0xb794f4, 0x68d391].map(
-        (c) => new THREE.MeshBasicMaterial({ color: c, side: THREE.BackSide })
-      ) as THREE.Material[]
+    // Cube đỏ dễ thấy
+    const cube = new THREE.Mesh(
+      new THREE.BoxGeometry(1.5, 1.5, 1.5),
+      new THREE.MeshBasicMaterial({ color: 0xff0000 })
     );
-    scene.add(sky);
+    cube.position.set(0, 1.2, -2);
+    scene.add(cube);
+
+    // Skybox 6 màu
+    scene.add(
+      new THREE.Mesh(
+        new THREE.BoxGeometry(80, 80, 80),
+        [0xff6b6b, 0x4fd1c5, 0xf6ad55, 0x90cdf4, 0xb794f4, 0x68d391].map(
+          (c) => new THREE.MeshBasicMaterial({ color: c, side: THREE.BackSide })
+        ) as THREE.Material[]
+      )
+    );
 
     controls.target.copy(cube.position);
     camera.lookAt(cube.position);
 
-    console.log("[init] scene children:", scene.children.length);
-    setHud("scene ready");
-
-    // Resize
+    // Resize theo viewport
     const onResize = () => {
-      if (!rendererRef.current || !cameraRef.current || !mountRef.current)
-        return;
-      const w = mountRef.current.clientWidth,
-        h = mountRef.current.clientHeight;
-      rendererRef.current.setSize(w, h, false);
-      cameraRef.current.aspect = w / h;
-      cameraRef.current.updateProjectionMatrix();
-      console.log("[resize]", w, h);
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      renderer.setSize(w, h, false);
+      camera.aspect = w / h;
+      camera.updateProjectionMatrix();
     };
-    const ro = new ResizeObserver(onResize);
-    ro.observe(mount);
+    window.addEventListener("resize", onResize);
 
     // Loop
     let last = performance.now();
-    let frames = 0,
-      lastLog = performance.now();
-    const up = new THREE.Vector3(0, 1, 0),
-      tmp = new THREE.Vector3(),
-      right = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const tmp = new THREE.Vector3();
+    const right = new THREE.Vector3();
     const speed = 2.2;
 
     const tick = () => {
@@ -207,8 +160,7 @@ export default function App() {
       cube.rotation.x += 0.6 * dt;
       cube.rotation.y += 0.8 * dt;
 
-      // WASD/joystick
-      const cam = cameraRef.current!;
+      // WASD/joystick move
       const move = new THREE.Vector2(0, 0);
       if (keys.current["w"]) move.y += 1;
       if (keys.current["s"]) move.y -= 1;
@@ -217,46 +169,29 @@ export default function App() {
       move.add(joyVec.current);
       if (move.lengthSq() > 0) {
         move.clampLength(0, 1);
-        cam.getWorldDirection(tmp);
+        camera.getWorldDirection(tmp);
         tmp.y = 0;
         tmp.normalize();
         right.crossVectors(tmp, up).normalize().multiplyScalar(-1);
         const worldMove = new THREE.Vector3();
         worldMove.addScaledVector(tmp, move.y);
         worldMove.addScaledVector(right, move.x);
-        cam.position.addScaledVector(worldMove.normalize(), speed * dt);
+        camera.position.addScaledVector(worldMove.normalize(), speed * dt);
       }
 
+      // Controls: khi bật gyro thì khóa rotate, vẫn cho zoom/pan
       if (controlsRef.current) {
         const gyro = enabledRef.current;
-        // Cho phép zoom & pan mọi lúc
+        controlsRef.current.enableRotate = !gyro;
         controlsRef.current.enableZoom = true;
         controlsRef.current.enablePan = true;
-
-        // Khi bật gyro: ngừng autoRotate + khóa rotate bằng tay
         controlsRef.current.autoRotate = !gyro;
-        controlsRef.current.enableRotate = !gyro;
-
         controlsRef.current.update();
       }
 
-      renderer.render(scene, cam);
+      renderer.render(scene, camera);
       animRef.current = requestAnimationFrame(tick);
-
-      // FPS/log heartbeat mỗi ~2s
-      frames++;
-      if (now - lastLog > 2000) {
-        const size = renderer.getSize(new THREE.Vector2());
-        console.log(
-          `[tick] fps~${(frames / ((now - lastLog) / 1000)).toFixed(
-            1
-          )} | canvas ${size.x}x${size.y} | dpr ${window.devicePixelRatio || 1}`
-        );
-        frames = 0;
-        lastLog = now;
-      }
     };
-    console.log("[init] start loop");
     tick();
 
     // keys
@@ -268,40 +203,42 @@ export default function App() {
     window.addEventListener("keyup", upk);
 
     return () => {
+      window.removeEventListener("resize", onResize);
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", upk);
-      ro.disconnect();
       if (animRef.current) cancelAnimationFrame(animRef.current);
       renderer.dispose();
-      mount.removeChild(renderer.domElement);
-      console.log("[cleanup] done");
+      mountRef.current?.removeChild(renderer.domElement);
     };
   }, []);
 
-  // Gyro
+  // ===== DeviceOrientation -> camera quaternion =====
   useEffect(() => {
     const onOrientation = (ev: DeviceOrientationEvent) => {
       if (!enabledRef.current || !cameraRef.current) return;
 
       const { alpha, beta, gamma } = ev;
-      const a = THREE.MathUtils.degToRad(alpha || 0); // yaw   (Z->Y in our order)
-      const b = THREE.MathUtils.degToRad(beta || 0); // pitch (X)
-      const g = THREE.MathUtils.degToRad(gamma || 0); // roll  (Z)
+      const a = THREE.MathUtils.degToRad(alpha || 0); // yaw
+      const b = THREE.MathUtils.degToRad(beta || 0);  // pitch
+      const g = THREE.MathUtils.degToRad(gamma || 0); // roll
 
-      // Chuẩn theo three/examples/DeviceOrientationControls:
-      // euler.set( beta, alpha, -gamma, 'YXZ' );
+      // q = R(b,a,-g) * Rx(-90deg) * Rz(-screenAngle)
       euler.current.set(b, a, -g, "YXZ");
-
-      // q = R(b,a,-g) * Rx(-90°) * Rz(-screenAngle)
       q.current.setFromEuler(euler.current);
       q.current.multiply(QX_MINUS_90);
       q.current.multiply(screenFixQ.current);
 
       cameraRef.current.quaternion.copy(q.current);
+
+      setDebugText(
+        `α:${(alpha ?? 0).toFixed(1)} β:${(beta ?? 0).toFixed(1)} γ:${(
+          gamma ?? 0
+        ).toFixed(1)}`
+      );
+      setEvtCount((c) => c + 1);
     };
 
     window.addEventListener("deviceorientation", onOrientation, true);
-    // một số máy phát 'deviceorientationabsolute'
     window.addEventListener(
       "deviceorientationabsolute",
       onOrientation as any,
@@ -317,11 +254,10 @@ export default function App() {
     };
   }, []);
 
-  // --- thay hoàn toàn requestGyro
+  // ===== Request permission & lock orientation (nếu có) =====
   const requestGyro = async () => {
     setHud("requesting permission…");
     try {
-      // iOS 13+ needs permission
       const NeedsPerm =
         typeof (window as any).DeviceOrientationEvent !== "undefined" &&
         typeof (DeviceOrientationEvent as any).requestPermission === "function";
@@ -331,7 +267,6 @@ export default function App() {
           setHud("permission denied (iOS)");
           return;
         }
-        // (tuỳ máy) xin motion luôn
         if (
           typeof (window as any).DeviceMotionEvent !== "undefined" &&
           typeof (DeviceMotionEvent as any).requestPermission === "function"
@@ -342,23 +277,18 @@ export default function App() {
         }
       }
 
-      // reset counter, bật chế độ gyro và chờ xem có event tới không
       setEvtCount(0);
       enabledRef.current = true;
       setHud("gyro ON — waiting events…");
 
-      // đợi tối đa 2000ms xem có event nào vào không
       setTimeout(() => {
-        if (evtCount <= 0) {
-          setHud(
-            "no sensor events — check HTTPS / Permissions-Policy / open in Safari/Chrome"
-          );
-        } else {
-          setHud(`receiving events ✔ (${evtCount})`);
-        }
+        setHud(
+          evtCount > 0
+            ? `receiving events ✔ (${evtCount})`
+            : "no sensor events — check headers/HTTPS or open in Safari/Chrome"
+        );
       }, 2000);
 
-      // orientation lock (bỏ qua nếu không hỗ trợ)
       const orien: any = screen.orientation;
       if (orien?.lock && typeof orien.lock === "function") {
         try {
@@ -371,7 +301,7 @@ export default function App() {
     }
   };
 
-  // Joystick (UI tối giản)
+  // ===== Simple joystick (optional) =====
   const JOY_RADIUS = 60,
     JOY_DEADZONE = 8;
   const [joyActive, setJoyActive] = useState(false);
@@ -416,6 +346,7 @@ export default function App() {
 
   return (
     <div className="w-full h-screen bg-black text-white select-none">
+      {/* HUD */}
       <div
         style={{
           position: "fixed",
@@ -426,18 +357,6 @@ export default function App() {
           gap: 8,
         }}
       >
-        <div
-          style={{
-            position: "fixed",
-            left: 12,
-            top: 70,
-            zIndex: 1000,
-            display: "flex",
-            gap: 8,
-          }}
-        >
-          events:
-        </div>
         <button
           onClick={requestGyro}
           className="px-3 py-2 rounded-2xl bg-white/10 hover:bg-white/20 backdrop-blur border border-white/20 text-sm"
@@ -451,10 +370,11 @@ export default function App() {
           Recenter
         </button>
         <div className="text-xs opacity-80 px-2 py-1 rounded bg-white/5 border border-white/10">
-          {hud} • {evtCount} events
+          {hud} • {debugText}
         </div>
       </div>
 
+      {/* Canvas mount */}
       <div
         ref={mountRef}
         style={{
@@ -467,6 +387,7 @@ export default function App() {
         }}
       />
 
+      {/* Joystick */}
       <div
         className="absolute z-20 left-4 bottom-4 w-40 h-40 touch-none"
         onPointerDown={onJoyStart}

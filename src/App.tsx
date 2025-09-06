@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-
+const QX_MINUS_90 = new THREE.Quaternion().setFromAxisAngle(
+  new THREE.Vector3(1, 0, 0),
+  -Math.PI / 2
+);
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
   const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
@@ -14,7 +17,7 @@ export default function App() {
   const euler = useRef(new THREE.Euler());
   const q = useRef(new THREE.Quaternion());
 
-  const [debugText, setDebugText] = useState("Tap Enable Gyro →");
+  // const [debugText, _setDebugText] = useState("Tap Enable Gyro →");
   const [hud, setHud] = useState("init…");
   const keys = useRef<Record<string, boolean>>({});
   const joyVec = useRef(new THREE.Vector2(0, 0));
@@ -225,8 +228,15 @@ export default function App() {
       }
 
       if (controlsRef.current) {
-        controlsRef.current.enabled = !enabledRef.current;
-        controlsRef.current.autoRotate = !enabledRef.current;
+        const gyro = enabledRef.current;
+        // Cho phép zoom & pan mọi lúc
+        controlsRef.current.enableZoom = true;
+        controlsRef.current.enablePan = true;
+
+        // Khi bật gyro: ngừng autoRotate + khóa rotate bằng tay
+        controlsRef.current.autoRotate = !gyro;
+        controlsRef.current.enableRotate = !gyro;
+
         controlsRef.current.update();
       }
 
@@ -272,23 +282,26 @@ export default function App() {
   useEffect(() => {
     const onOrientation = (ev: DeviceOrientationEvent) => {
       if (!enabledRef.current || !cameraRef.current) return;
+
       const { alpha, beta, gamma } = ev;
-      const a = THREE.MathUtils.degToRad(alpha || 0);
-      const b = THREE.MathUtils.degToRad(beta || 0);
-      const g = THREE.MathUtils.degToRad(gamma || 0);
+      const a = THREE.MathUtils.degToRad(alpha || 0); // yaw   (Z->Y in our order)
+      const b = THREE.MathUtils.degToRad(beta || 0); // pitch (X)
+      const g = THREE.MathUtils.degToRad(gamma || 0); // roll  (Z)
+
+      // Chuẩn theo three/examples/DeviceOrientationControls:
+      // euler.set( beta, alpha, -gamma, 'YXZ' );
       euler.current.set(b, a, -g, "YXZ");
+
+      // q = R(b,a,-g) * Rx(-90°) * Rz(-screenAngle)
       q.current.setFromEuler(euler.current);
-      cameraRef.current.quaternion.copy(q.current).multiply(screenFixQ.current);
-      setDebugText(
-        `α:${(alpha ?? 0).toFixed(1)} β:${(beta ?? 0).toFixed(1)} γ:${(
-          gamma ?? 0
-        ).toFixed(1)}`
-      );
-      setEvtCount((c) => c + 1);
+      q.current.multiply(QX_MINUS_90);
+      q.current.multiply(screenFixQ.current);
+
+      cameraRef.current.quaternion.copy(q.current);
     };
 
-    // lắng nghe cả 2 loại
     window.addEventListener("deviceorientation", onOrientation, true);
+    // một số máy phát 'deviceorientationabsolute'
     window.addEventListener(
       "deviceorientationabsolute",
       onOrientation as any,
@@ -438,7 +451,7 @@ export default function App() {
           Recenter
         </button>
         <div className="text-xs opacity-80 px-2 py-1 rounded bg-white/5 border border-white/10">
-          {hud} • {debugText}
+          {hud} • {evtCount} events
         </div>
       </div>
 

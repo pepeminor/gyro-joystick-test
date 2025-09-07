@@ -31,6 +31,26 @@ export default function App() {
     };
   }, []);
 
+  // ===== Khóa scroll trang khi đang kéo joystick (iOS) =====
+  useEffect(() => {
+    if (!joyActive) return;
+    const prev = {
+      ob: document.body.style.overscrollBehavior,
+      ts: document.documentElement.style.touchAction,
+    };
+    document.body.style.overscrollBehavior = "none";
+    document.documentElement.style.touchAction = "none";
+
+    const noScroll = (e: TouchEvent) => e.preventDefault();
+    document.addEventListener("touchmove", noScroll, { passive: false });
+
+    return () => {
+      document.body.style.overscrollBehavior = prev.ob;
+      document.documentElement.style.touchAction = prev.ts;
+      document.removeEventListener("touchmove", noScroll);
+    };
+  }, [joyActive]);
+
   // ====== THREE ======
   useEffect(() => {
     if (!mountRef.current) return;
@@ -39,11 +59,20 @@ export default function App() {
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
     renderer.setClearColor(0x0d0f13, 1);
+
+    // ✅ CHỈNH TÊN THUỘC TÍNH CHO ĐÚNG TYPE
+    renderer.domElement.style.touchAction = "none";
+    renderer.domElement.style.userSelect = "none";
+    // webkitUserSelect có trong CSSStyleDeclaration
+    (renderer.domElement.style as any).webkitUserSelect = "none";
+    // -webkit-touch-callout không có type -> dùng setProperty
+    renderer.domElement.style.setProperty("-webkit-touch-callout", "none");
+
     mountRef.current.appendChild(renderer.domElement);
 
     const scene = new THREE.Scene();
 
-    // Camera & Controls (tự điều khiển thủ công)
+    // Camera & Controls
     const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 500);
     camera.position.set(0, 1.6, 6);
     const controls = new OrbitControls(camera, renderer.domElement);
@@ -75,7 +104,7 @@ export default function App() {
     player.position.set(0, 0.6, 0);
     scene.add(player);
 
-    // Vật thể rải rác cho vui eye-tracking
+    // Vật thể rải rác
     for (let i = 0; i < 40; i++) {
       const s = 0.3 + Math.random() * 0.8;
       const m = new THREE.Mesh(
@@ -90,22 +119,25 @@ export default function App() {
 
     // ====== Third-person camera follow ======
     const camState = {
-      yaw: 0,            // quanh trục Y
-      pitch: -0.12,      // hơi cúi
-      distance: 5.5,     // khoảng cách với player
+      yaw: 0,
+      pitch: -0.12,
+      distance: 5.5,
       target: new THREE.Vector3(),
       curPos: new THREE.Vector3(),
     };
 
     // Drag để xoay camera
     const onPointerDown = (e: PointerEvent) => {
-      if ((e.target as HTMLElement).closest("#joystick")) return; // không ăn drag khi chạm joystick
+      const targetEl = e.target as HTMLElement;
+      if (targetEl.closest("#joystick")) return;
+      e.preventDefault();
       isDraggingView.current = true;
       lastDrag.current = { x: e.clientX, y: e.clientY };
-      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      targetEl.setPointerCapture?.(e.pointerId);
     };
     const onPointerMove = (e: PointerEvent) => {
       if (!isDraggingView.current || !lastDrag.current) return;
+      e.preventDefault();
       const dx = e.clientX - lastDrag.current.x;
       const dy = e.clientY - lastDrag.current.y;
       lastDrag.current = { x: e.clientX, y: e.clientY };
@@ -117,10 +149,11 @@ export default function App() {
       isDraggingView.current = false;
       lastDrag.current = null;
     };
-    renderer.domElement.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-    window.addEventListener("pointercancel", onPointerUp);
+
+    renderer.domElement.addEventListener("pointerdown", onPointerDown, { passive: false });
+    window.addEventListener("pointermove", onPointerMove, { passive: false });
+    window.addEventListener("pointerup", onPointerUp, { passive: false });
+    window.addEventListener("pointercancel", onPointerUp, { passive: false });
 
     // Resize
     const onResize = () => {
@@ -136,8 +169,8 @@ export default function App() {
     const up = new THREE.Vector3(0, 1, 0);
     const vel = new THREE.Vector3();
     const moveDir = new THREE.Vector3();
-    const accel = 18;   // m/s^2
-    const deaccel = 14; // m/s^2
+    const accel = 18;
+    const deaccel = 14;
     const maxSpeed = 5.5;
 
     // Main loop
@@ -147,7 +180,6 @@ export default function App() {
       const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      // ===== Camera follow target & vị trí mong muốn =====
       camState.target.copy(player.position).add(new THREE.Vector3(0, 0.9, 0));
       const off = new THREE.Vector3(
         Math.sin(camState.yaw) * Math.cos(camState.pitch),
@@ -156,12 +188,9 @@ export default function App() {
       ).multiplyScalar(-camState.distance);
       const desired = new THREE.Vector3().copy(camState.target).add(off);
 
-      // ===== HƯỚNG CHUẨN THEO CAMERA (sửa hướng di chuyển) =====
-      // forward trên mặt đất = hướng camera nhìn (project y=0)
       const camForward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
       const camRight   = new THREE.Vector3().crossVectors(camForward, up).normalize();
 
-      // build input từ joystick + WASD
       const joyX = joyVec.current.x;
       const joyY = joyVec.current.y;
       let iX = joyX, iY = joyY;
@@ -172,12 +201,10 @@ export default function App() {
       const input = new THREE.Vector2(iX, iY);
       if (input.lengthSq() > 1) input.normalize();
 
-      // Hướng move = forward * input.y + right * input.x
       moveDir.set(0, 0, 0)
         .addScaledVector(camForward, input.y)
         .addScaledVector(camRight,   input.x);
 
-      // tăng/giảm tốc
       if (moveDir.lengthSq() > 0) {
         moveDir.normalize();
         vel.addScaledVector(moveDir, accel * dt);
@@ -190,10 +217,8 @@ export default function App() {
       }
       if (vel.length() > maxSpeed) vel.setLength(maxSpeed);
 
-      // update player position
       player.position.addScaledVector(vel, dt);
 
-      // xoay player theo hướng di chuyển (mượt)
       const spd = vel.length();
       if (spd > 0.1) {
         const targetYaw = Math.atan2(vel.x, vel.z);
@@ -203,12 +228,10 @@ export default function App() {
         player.rotation.y += d * Math.min(1, dt * 8);
       }
 
-      // lerp camera mượt
       camState.curPos.lerp(desired, 1 - Math.exp(-dt * 10));
       camera.position.copy(camState.curPos);
       camera.lookAt(camState.target);
 
-      // hiệu ứng quay cube
       player.rotation.x += 0.2 * dt;
 
       renderer.render(scene, camera);
@@ -229,6 +252,7 @@ export default function App() {
 
   // ====== JOYSTICK HANDLERS ======
   const onJoyStart = (e: React.PointerEvent) => {
+    e.preventDefault();
     const el = e.currentTarget as HTMLElement;
     const rect = el.getBoundingClientRect();
     const x = e.clientX - rect.left;
@@ -236,10 +260,11 @@ export default function App() {
     joyOrigin.current = { x, y };
     setJoyActive(true);
     setJoyKnob({ x, y });
-    el.setPointerCapture(e.pointerId);
+    el.setPointerCapture?.(e.pointerId);
   };
 
   const onJoyMove = (e: React.PointerEvent) => {
+    e.preventDefault();
     if (!joyOrigin.current) return;
     const el = e.currentTarget as HTMLElement;
     const rect = el.getBoundingClientRect();
@@ -258,10 +283,9 @@ export default function App() {
       y: joyOrigin.current.y + clamped.y,
     });
 
-    // chuẩn hóa [-1..1], Y ngược lại (kéo lên = tiến tới)
     const nx = clamped.x / JOY_RADIUS;
     const ny = -clamped.y / JOY_RADIUS;
-    const mag = Math.sqrt(nx * nx + ny * ny);
+    const mag = Math.hypot(nx, ny);
 
     if (mag < JOY_DEADZONE / JOY_RADIUS) {
       joyVec.current.set(0, 0);
@@ -278,7 +302,6 @@ export default function App() {
     joyVec.current.set(0, 0);
   };
 
-  // helper CSS safe-area bottom
   const safeBottom = "env(safe-area-inset-bottom, 0px)";
 
   return (
@@ -290,28 +313,37 @@ export default function App() {
         background: "#000",
         color: "#fff",
         userSelect: "none",
+        // React inline style có sẵn prefix Webkit* nên dùng được:
+        WebkitUserSelect: "none",
+        WebkitTouchCallout: "none",
+        touchAction: "none",
       }}
+      onContextMenu={(e) => e.preventDefault()}
     >
       {/* Canvas mount */}
-      <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />
+      <div ref={mountRef} style={{ position: "absolute", inset: 0, touchAction: "none" }} />
 
-      {/* HUD nhỏ */}
+      {/* HUD nhỏ (không nhận pointer để khỏi bị bôi đen) */}
       <div style={{
         position: "fixed", left: 12, top: 12, zIndex: 20,
         padding: "6px 10px", borderRadius: 10, background: "rgba(255,255,255,.06)",
-        border: "1px solid rgba(255,255,255,.15)", fontSize: 12
+        border: "1px solid rgba(255,255,255,.15)", fontSize: 12,
+        pointerEvents: "none",
+        userSelect: "none",
+        WebkitUserSelect: "none",
+        WebkitTouchCallout: "none",
       }}>
         Drag để xoay camera • Joystick để di chuyển • WASD cũng được
       </div>
 
-      {/* ====== JOYSTICK UI (center ngang, cách đáy ~30% viewport + safe-area) ====== */}
+      {/* ====== JOYSTICK UI ====== */}
       <div
         id="joystick"
-        onPointerDown={onJoyStart}
-        onPointerMove={onJoyMove}
+        onPointerDown={(e) => { e.preventDefault(); onJoyStart(e); }}
+        onPointerMove={(e) => { e.preventDefault(); onJoyMove(e); }}
         onPointerUp={onJoyEnd}
         onPointerCancel={onJoyEnd}
-        onPointerLeave={onJoyEnd}
+        onContextMenu={(e) => e.preventDefault()}
         style={{
           position: "fixed",
           left: "50%",
@@ -321,6 +353,8 @@ export default function App() {
           height: JOY_RADIUS * 2 + 16,
           zIndex: 30,
           touchAction: "none",
+          WebkitUserSelect: "none",
+          WebkitTouchCallout: "none",
         }}
       >
         {/* vòng ngoài */}
@@ -331,6 +365,7 @@ export default function App() {
           background: "rgba(255,255,255,.06)",
           border: "1px solid rgba(255,255,255,.18)",
           boxShadow: "0 6px 30px rgba(0,0,0,.35)",
+          touchAction: "none",
         }} />
         {/* knob */}
         {joyKnob && (
@@ -344,6 +379,7 @@ export default function App() {
             background: "rgba(255,255,255,.25)",
             border: "1px solid rgba(255,255,255,.55)",
             backdropFilter: "blur(4px)",
+            touchAction: "none",
           }} />
         )}
         {/* dot center */}
@@ -353,7 +389,8 @@ export default function App() {
             left: "50%", top: "50%",
             transform: "translate(-50%,-50%)",
             width: 8, height: 8, borderRadius: 999,
-            background: "rgba(255,255,255,.5)"
+            background: "rgba(255,255,255,.5)",
+            touchAction: "none",
           }} />
         )}
       </div>

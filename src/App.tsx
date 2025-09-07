@@ -2,140 +2,127 @@ import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-// Quaternion bù -90° quanh trục X (chuẩn khi map DeviceOrientation -> camera)
-const QX_MINUS_90 = new THREE.Quaternion().setFromAxisAngle(
-  new THREE.Vector3(1, 0, 0),
-  -Math.PI / 2
-);
-
 export default function App() {
   const mountRef = useRef<HTMLDivElement | null>(null);
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null);
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null);
-  const controlsRef = useRef<OrbitControls | null>(null);
-  const animRef = useRef<number | null>(null);
 
-  // Gyro
-  const enabledRef = useRef(false);
-  const screenFixQ = useRef(new THREE.Quaternion()); // bù góc quay màn hình
-  const euler = useRef(new THREE.Euler());
-  const q = useRef(new THREE.Quaternion());
+  // ====== JOYSTICK ======
+  const JOY_RADIUS = 70;
+  const JOY_DEADZONE = 6;
+  const [joyActive, setJoyActive] = useState(false);
+  const [joyKnob, setJoyKnob] = useState<{ x: number; y: number } | null>(null);
+  const joyOrigin = useRef<{ x: number; y: number } | null>(null);
+  const joyVec = useRef(new THREE.Vector2(0, 0)); // [-1..1]
 
-  // UI/debug
-  const [debugText, setDebugText] = useState("Tap Enable Gyro →");
-  const [hud, setHud] = useState("init…");
-  const [evtCount, setEvtCount] = useState(0);
+  // Mouse drag để xoay camera
+  const isDraggingView = useRef(false);
+  const lastDrag = useRef<{ x: number; y: number } | null>(null);
 
-  // Movement
+  // WASD fallback (desktop)
   const keys = useRef<Record<string, boolean>>({});
-  const joyVec = useRef(new THREE.Vector2(0, 0));
-
-  // Recenter yaw
-  const recenter = () => {
-    const cam = cameraRef.current;
-    if (!cam) return;
-    const dir = new THREE.Vector3();
-    cam.getWorldDirection(dir);
-    dir.y = 0;
-    dir.normalize();
-    const yaw = Math.atan2(dir.x, dir.z);
-    const invYaw = new THREE.Quaternion().setFromAxisAngle(
-      new THREE.Vector3(0, 1, 0),
-      -yaw
-    );
-    cam.quaternion.premultiply(invYaw);
-  };
-
-  const updateScreenFix = () => {
-    const angleDeg =
-      (screen.orientation?.angle as number) ?? (window as any).orientation ?? 0;
-    const angle = (angleDeg * Math.PI) / 180;
-    screenFixQ.current.setFromAxisAngle(new THREE.Vector3(0, 0, 1), -angle);
-  };
 
   useEffect(() => {
-    updateScreenFix();
-    const onChange = () => updateScreenFix();
-    screen.orientation?.addEventListener("change", onChange);
-    return () => screen.orientation?.removeEventListener("change", onChange);
+    const down = (e: KeyboardEvent) => (keys.current[e.key.toLowerCase()] = true);
+    const up = (e: KeyboardEvent) => (keys.current[e.key.toLowerCase()] = false);
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+    };
   }, []);
 
+  // ====== THREE ======
   useEffect(() => {
     if (!mountRef.current) return;
 
-    // Renderer
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setClearColor(0x20252b, 1);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
     renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setClearColor(0x0d0f13, 1);
     mountRef.current.appendChild(renderer.domElement);
-    rendererRef.current = renderer;
 
-    // Scene & camera
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(
-      70,
-      window.innerWidth / window.innerHeight,
-      0.01,
-      200
-    );
-    camera.position.set(0, 1.6, 5);
-    cameraRef.current = camera;
 
-    // Controls (fallback desktop)
+    // Camera & Controls (tự điều khiển thủ công)
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 500);
+    camera.position.set(0, 1.6, 6);
     const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true;
-    controls.autoRotate = true;
-    controls.autoRotateSpeed = 1;
-    controlsRef.current = controls;
+    controls.enabled = false;
 
-    // Helpers & lights
-    scene.add(new THREE.GridHelper(60, 60, 0xffffff, 0x444444));
-    const axes = new THREE.AxesHelper(3);
-    axes.position.set(0, 1.2, 0);
-    scene.add(axes);
-
-    scene.add(new THREE.AmbientLight(0xffffff, 1.2));
-    const dir = new THREE.DirectionalLight(0xffffff, 1.2);
-    dir.position.set(5, 10, 7);
+    // Lights
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dir = new THREE.DirectionalLight(0xffffff, 1.0);
+    dir.position.set(8, 12, 6);
     scene.add(dir);
-    scene.add(new THREE.DirectionalLightHelper(dir, 1, 0xffee88));
 
-    const point = new THREE.PointLight(0xffffff, 2.0, 0, 2);
-    point.position.set(-3, 2, 2);
-    scene.add(point);
-    scene.add(new THREE.PointLightHelper(point, 0.3, 0x88ff88));
-
-    // Ground
+    // Ground + grid
     const ground = new THREE.Mesh(
-      new THREE.PlaneGeometry(100, 100),
+      new THREE.PlaneGeometry(400, 400),
       new THREE.MeshStandardMaterial({ color: 0x0f1115, roughness: 1 })
     );
     ground.rotation.x = -Math.PI / 2;
     scene.add(ground);
+    const grid = new THREE.GridHelper(400, 80, 0x445566, 0x222a33);
+    (grid.material as THREE.LineBasicMaterial).transparent = true;
+    (grid.material as THREE.LineBasicMaterial).opacity = 0.7;
+    scene.add(grid);
 
-    // Cube đỏ dễ thấy
-    const cube = new THREE.Mesh(
-      new THREE.BoxGeometry(1.5, 1.5, 1.5),
-      new THREE.MeshBasicMaterial({ color: 0xff0000 })
+    // Cube (player)
+    const player = new THREE.Mesh(
+      new THREE.BoxGeometry(1.2, 1.2, 1.2),
+      new THREE.MeshStandardMaterial({ color: 0xff2d2d, metalness: 0.1, roughness: 0.5 })
     );
-    cube.position.set(0, 1.2, -2);
-    scene.add(cube);
+    player.position.set(0, 0.6, 0);
+    scene.add(player);
 
-    // Skybox 6 màu
-    scene.add(
-      new THREE.Mesh(
-        new THREE.BoxGeometry(80, 80, 80),
-        [0xff6b6b, 0x4fd1c5, 0xf6ad55, 0x90cdf4, 0xb794f4, 0x68d391].map(
-          (c) => new THREE.MeshBasicMaterial({ color: c, side: THREE.BackSide })
-        ) as THREE.Material[]
-      )
-    );
+    // Vật thể rải rác cho vui eye-tracking
+    for (let i = 0; i < 40; i++) {
+      const s = 0.3 + Math.random() * 0.8;
+      const m = new THREE.Mesh(
+        new THREE.BoxGeometry(s, s, s),
+        new THREE.MeshStandardMaterial({ color: 0x68d391 })
+      );
+      const r = 40 + Math.random() * 80;
+      const t = Math.random() * Math.PI * 2;
+      m.position.set(Math.cos(t) * r, s / 2, Math.sin(t) * r);
+      scene.add(m);
+    }
 
-    controls.target.copy(cube.position);
-    camera.lookAt(cube.position);
+    // ====== Third-person camera follow ======
+    const camState = {
+      yaw: 0,            // quanh trục Y
+      pitch: -0.12,      // hơi cúi
+      distance: 5.5,     // khoảng cách với player
+      target: new THREE.Vector3(),
+      curPos: new THREE.Vector3(),
+    };
 
-    // Resize theo viewport
+    // Drag để xoay camera
+    const onPointerDown = (e: PointerEvent) => {
+      if ((e.target as HTMLElement).closest("#joystick")) return; // không ăn drag khi chạm joystick
+      isDraggingView.current = true;
+      lastDrag.current = { x: e.clientX, y: e.clientY };
+      (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    };
+    const onPointerMove = (e: PointerEvent) => {
+      if (!isDraggingView.current || !lastDrag.current) return;
+      const dx = e.clientX - lastDrag.current.x;
+      const dy = e.clientY - lastDrag.current.y;
+      lastDrag.current = { x: e.clientX, y: e.clientY };
+      camState.yaw   -= dx * 0.0032;
+      camState.pitch -= dy * 0.0022;
+      camState.pitch  = Math.max(-Math.PI / 2 + 0.05, Math.min(0.6, camState.pitch));
+    };
+    const onPointerUp = () => {
+      isDraggingView.current = false;
+      lastDrag.current = null;
+    };
+    renderer.domElement.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+
+    // Resize
     const onResize = () => {
       const w = window.innerWidth;
       const h = window.innerHeight;
@@ -145,263 +132,229 @@ export default function App() {
     };
     window.addEventListener("resize", onResize);
 
-    // Loop
-    let last = performance.now();
+    // Movement params
     const up = new THREE.Vector3(0, 1, 0);
-    const tmp = new THREE.Vector3();
-    const right = new THREE.Vector3();
-    const speed = 2.2;
+    const vel = new THREE.Vector3();
+    const moveDir = new THREE.Vector3();
+    const accel = 18;   // m/s^2
+    const deaccel = 14; // m/s^2
+    const maxSpeed = 5.5;
 
+    // Main loop
+    let last = performance.now();
     const tick = () => {
       const now = performance.now();
-      const dt = (now - last) / 1000;
+      const dt = Math.min(0.05, (now - last) / 1000);
       last = now;
 
-      cube.rotation.x += 0.6 * dt;
-      cube.rotation.y += 0.8 * dt;
+      // ===== Camera follow target & vị trí mong muốn =====
+      camState.target.copy(player.position).add(new THREE.Vector3(0, 0.9, 0));
+      const off = new THREE.Vector3(
+        Math.sin(camState.yaw) * Math.cos(camState.pitch),
+        Math.sin(camState.pitch),
+        Math.cos(camState.yaw) * Math.cos(camState.pitch)
+      ).multiplyScalar(-camState.distance);
+      const desired = new THREE.Vector3().copy(camState.target).add(off);
 
-      // WASD/joystick move
-      const move = new THREE.Vector2(0, 0);
-      if (keys.current["w"]) move.y += 1;
-      if (keys.current["s"]) move.y -= 1;
-      if (keys.current["a"]) move.x -= 1;
-      if (keys.current["d"]) move.x += 1;
-      move.add(joyVec.current);
-      if (move.lengthSq() > 0) {
-        move.clampLength(0, 1);
-        camera.getWorldDirection(tmp);
-        tmp.y = 0;
-        tmp.normalize();
-        right.crossVectors(tmp, up).normalize().multiplyScalar(-1);
-        const worldMove = new THREE.Vector3();
-        worldMove.addScaledVector(tmp, move.y);
-        worldMove.addScaledVector(right, move.x);
-        camera.position.addScaledVector(worldMove.normalize(), speed * dt);
+      // ===== HƯỚNG CHUẨN THEO CAMERA (sửa hướng di chuyển) =====
+      // forward trên mặt đất = hướng camera nhìn (project y=0)
+      const camForward = new THREE.Vector3(-off.x, 0, -off.z).normalize();
+      const camRight   = new THREE.Vector3().crossVectors(camForward, up).normalize();
+
+      // build input từ joystick + WASD
+      const joyX = joyVec.current.x;
+      const joyY = joyVec.current.y;
+      let iX = joyX, iY = joyY;
+      if (keys.current["w"]) iY += 1;
+      if (keys.current["s"]) iY -= 1;
+      if (keys.current["a"]) iX -= 1;
+      if (keys.current["d"]) iX += 1;
+      const input = new THREE.Vector2(iX, iY);
+      if (input.lengthSq() > 1) input.normalize();
+
+      // Hướng move = forward * input.y + right * input.x
+      moveDir.set(0, 0, 0)
+        .addScaledVector(camForward, input.y)
+        .addScaledVector(camRight,   input.x);
+
+      // tăng/giảm tốc
+      if (moveDir.lengthSq() > 0) {
+        moveDir.normalize();
+        vel.addScaledVector(moveDir, accel * dt);
+      } else {
+        const sp = vel.length();
+        if (sp > 0) {
+          const dec = Math.max(sp - deaccel * dt, 0);
+          vel.setLength(dec);
+        }
+      }
+      if (vel.length() > maxSpeed) vel.setLength(maxSpeed);
+
+      // update player position
+      player.position.addScaledVector(vel, dt);
+
+      // xoay player theo hướng di chuyển (mượt)
+      const spd = vel.length();
+      if (spd > 0.1) {
+        const targetYaw = Math.atan2(vel.x, vel.z);
+        const curYaw = player.rotation.y;
+        let d = targetYaw - curYaw;
+        d = Math.atan2(Math.sin(d), Math.cos(d));
+        player.rotation.y += d * Math.min(1, dt * 8);
       }
 
-      // Controls: khi bật gyro thì khóa rotate, vẫn cho zoom/pan
-      if (controlsRef.current) {
-        const gyro = enabledRef.current;
-        controlsRef.current.enableRotate = !gyro;
-        controlsRef.current.enableZoom = true;
-        controlsRef.current.enablePan = true;
-        controlsRef.current.autoRotate = !gyro;
-        controlsRef.current.update();
-      }
+      // lerp camera mượt
+      camState.curPos.lerp(desired, 1 - Math.exp(-dt * 10));
+      camera.position.copy(camState.curPos);
+      camera.lookAt(camState.target);
+
+      // hiệu ứng quay cube
+      player.rotation.x += 0.2 * dt;
 
       renderer.render(scene, camera);
-      animRef.current = requestAnimationFrame(tick);
+      requestAnimationFrame(tick);
     };
     tick();
 
-    // keys
-    const down = (e: KeyboardEvent) =>
-      (keys.current[e.key.toLowerCase()] = true);
-    const upk = (e: KeyboardEvent) =>
-      (keys.current[e.key.toLowerCase()] = false);
-    window.addEventListener("keydown", down);
-    window.addEventListener("keyup", upk);
-
     return () => {
       window.removeEventListener("resize", onResize);
-      window.removeEventListener("keydown", down);
-      window.removeEventListener("keyup", upk);
-      if (animRef.current) cancelAnimationFrame(animRef.current);
+      renderer.domElement.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
       renderer.dispose();
       mountRef.current?.removeChild(renderer.domElement);
     };
   }, []);
 
-  // ===== DeviceOrientation -> camera quaternion =====
-  useEffect(() => {
-    const onOrientation = (ev: DeviceOrientationEvent) => {
-      if (!enabledRef.current || !cameraRef.current) return;
-
-      const { alpha, beta, gamma } = ev;
-      const a = THREE.MathUtils.degToRad(alpha || 0); // yaw
-      const b = THREE.MathUtils.degToRad(beta || 0);  // pitch
-      const g = THREE.MathUtils.degToRad(gamma || 0); // roll
-
-      // q = R(b,a,-g) * Rx(-90deg) * Rz(-screenAngle)
-      euler.current.set(b, a, -g, "YXZ");
-      q.current.setFromEuler(euler.current);
-      q.current.multiply(QX_MINUS_90);
-      q.current.multiply(screenFixQ.current);
-
-      cameraRef.current.quaternion.copy(q.current);
-
-      setDebugText(
-        `α:${(alpha ?? 0).toFixed(1)} β:${(beta ?? 0).toFixed(1)} γ:${(
-          gamma ?? 0
-        ).toFixed(1)}`
-      );
-      setEvtCount((c) => c + 1);
-    };
-
-    window.addEventListener("deviceorientation", onOrientation, true);
-    window.addEventListener(
-      "deviceorientationabsolute",
-      onOrientation as any,
-      true
-    );
-    return () => {
-      window.removeEventListener("deviceorientation", onOrientation, true);
-      window.removeEventListener(
-        "deviceorientationabsolute",
-        onOrientation as any,
-        true
-      );
-    };
-  }, []);
-
-  // ===== Request permission & lock orientation (nếu có) =====
-  const requestGyro = async () => {
-    setHud("requesting permission…");
-    try {
-      const NeedsPerm =
-        typeof (window as any).DeviceOrientationEvent !== "undefined" &&
-        typeof (DeviceOrientationEvent as any).requestPermission === "function";
-      if (NeedsPerm) {
-        const st = await (DeviceOrientationEvent as any).requestPermission();
-        if (st !== "granted") {
-          setHud("permission denied (iOS)");
-          return;
-        }
-        if (
-          typeof (window as any).DeviceMotionEvent !== "undefined" &&
-          typeof (DeviceMotionEvent as any).requestPermission === "function"
-        ) {
-          try {
-            await (DeviceMotionEvent as any).requestPermission();
-          } catch {}
-        }
-      }
-
-      setEvtCount(0);
-      enabledRef.current = true;
-      setHud("gyro ON — waiting events…");
-
-      setTimeout(() => {
-        setHud(
-          evtCount > 0
-            ? `receiving events ✔ (${evtCount})`
-            : "no sensor events — check headers/HTTPS or open in Safari/Chrome"
-        );
-      }, 2000);
-
-      const orien: any = screen.orientation;
-      if (orien?.lock && typeof orien.lock === "function") {
-        try {
-          await orien.lock("landscape");
-        } catch {}
-      }
-    } catch (e) {
-      console.error(e);
-      setHud("gyro error");
-    }
-  };
-
-  // ===== Simple joystick (optional) =====
-  const JOY_RADIUS = 60,
-    JOY_DEADZONE = 8;
-  const [joyActive, setJoyActive] = useState(false);
-  const [joyPos, setJoyPos] = useState<{ x: number; y: number } | null>(null);
-  const joyOrigin = useRef<{ x: number; y: number } | null>(null);
+  // ====== JOYSTICK HANDLERS ======
   const onJoyStart = (e: React.PointerEvent) => {
-    const rect = (e.target as HTMLElement).getBoundingClientRect();
-    const x = e.clientX - rect.left,
-      y = e.clientY - rect.top;
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
     joyOrigin.current = { x, y };
     setJoyActive(true);
-    setJoyPos({ x, y });
-    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    setJoyKnob({ x, y });
+    el.setPointerCapture(e.pointerId);
   };
+
   const onJoyMove = (e: React.PointerEvent) => {
     if (!joyOrigin.current) return;
-    const rect = (e.target as HTMLElement).getBoundingClientRect();
-    const x = e.clientX - rect.left,
-      y = e.clientY - rect.top;
-    const dx = x - joyOrigin.current.x,
-      dy = y - joyOrigin.current.y;
-    const v = new THREE.Vector2(dx, dy),
-      len = v.length();
+    const el = e.currentTarget as HTMLElement;
+    const rect = el.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const dx = x - joyOrigin.current.x;
+    const dy = y - joyOrigin.current.y;
+
+    const v = new THREE.Vector2(dx, dy);
+    const len = v.length();
     const clamped = v.clone();
     if (len > JOY_RADIUS) clamped.setLength(JOY_RADIUS);
-    setJoyPos({
+
+    setJoyKnob({
       x: joyOrigin.current.x + clamped.x,
       y: joyOrigin.current.y + clamped.y,
     });
-    const nx = clamped.x / JOY_RADIUS,
-      ny = -clamped.y / JOY_RADIUS;
+
+    // chuẩn hóa [-1..1], Y ngược lại (kéo lên = tiến tới)
+    const nx = clamped.x / JOY_RADIUS;
+    const ny = -clamped.y / JOY_RADIUS;
     const mag = Math.sqrt(nx * nx + ny * ny);
-    if (mag < JOY_DEADZONE / JOY_RADIUS) joyVec.current.set(0, 0);
-    else joyVec.current.set(nx, ny);
+
+    if (mag < JOY_DEADZONE / JOY_RADIUS) {
+      joyVec.current.set(0, 0);
+    } else {
+      joyVec.current.set(nx, ny);
+    }
   };
-  const onJoyEnd = () => {
+
+  const onJoyEnd = (e: React.PointerEvent) => {
+    (e.currentTarget as HTMLElement).releasePointerCapture?.(e.pointerId);
     joyOrigin.current = null;
     setJoyActive(false);
-    setJoyPos(null);
+    setJoyKnob(null);
     joyVec.current.set(0, 0);
   };
 
+  // helper CSS safe-area bottom
+  const safeBottom = "env(safe-area-inset-bottom, 0px)";
+
   return (
-    <div className="w-full h-screen bg-black text-white select-none">
-      {/* HUD */}
-      <div
-        style={{
-          position: "fixed",
-          left: 12,
-          top: 12,
-          zIndex: 1000,
-          display: "flex",
-          gap: 8,
-        }}
-      >
-        <button
-          onClick={requestGyro}
-          className="px-3 py-2 rounded-2xl bg-white/10 hover:bg-white/20 backdrop-blur border border-white/20 text-sm"
-        >
-          Enable Gyro
-        </button>
-        <button
-          onClick={recenter}
-          className="px-3 py-2 rounded-2xl bg-white/10 border border-white/20 text-sm"
-        >
-          Recenter
-        </button>
-        <div className="text-xs opacity-80 px-2 py-1 rounded bg-white/5 border border-white/10">
-          {hud} • {debugText}
-        </div>
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        overflow: "hidden",
+        background: "#000",
+        color: "#fff",
+        userSelect: "none",
+      }}
+    >
+      {/* Canvas mount */}
+      <div ref={mountRef} style={{ position: "absolute", inset: 0 }} />
+
+      {/* HUD nhỏ */}
+      <div style={{
+        position: "fixed", left: 12, top: 12, zIndex: 20,
+        padding: "6px 10px", borderRadius: 10, background: "rgba(255,255,255,.06)",
+        border: "1px solid rgba(255,255,255,.15)", fontSize: 12
+      }}>
+        Drag để xoay camera • Joystick để di chuyển • WASD cũng được
       </div>
 
-      {/* Canvas mount */}
+      {/* ====== JOYSTICK UI (center ngang, cách đáy ~30% viewport + safe-area) ====== */}
       <div
-        ref={mountRef}
-        style={{
-          position: "fixed",
-          left: 0,
-          top: 0,
-          width: "100vw",
-          height: "100vh",
-          zIndex: 0,
-        }}
-      />
-
-      {/* Joystick */}
-      <div
-        className="absolute z-20 left-4 bottom-4 w-40 h-40 touch-none"
+        id="joystick"
         onPointerDown={onJoyStart}
         onPointerMove={onJoyMove}
         onPointerUp={onJoyEnd}
         onPointerCancel={onJoyEnd}
         onPointerLeave={onJoyEnd}
+        style={{
+          position: "fixed",
+          left: "50%",
+          transform: "translateX(-50%)",
+          bottom: `calc(12vh + ${safeBottom} + 8px)`,
+          width: JOY_RADIUS * 2 + 16,
+          height: JOY_RADIUS * 2 + 16,
+          zIndex: 30,
+          touchAction: "none",
+        }}
       >
-        <div className="absolute inset-0 rounded-full border border-white/20 bg-white/5" />
-        {joyActive && joyPos && (
-          <div
-            className="absolute w-14 h-14 rounded-full border border-white/50 bg-white/30 -translate-x-1/2 -translate-y-1/2"
-            style={{ left: joyPos.x, top: joyPos.y }}
-          />
+        {/* vòng ngoài */}
+        <div style={{
+          position: "absolute",
+          inset: 0,
+          borderRadius: 999,
+          background: "rgba(255,255,255,.06)",
+          border: "1px solid rgba(255,255,255,.18)",
+          boxShadow: "0 6px 30px rgba(0,0,0,.35)",
+        }} />
+        {/* knob */}
+        {joyKnob && (
+          <div style={{
+            position: "absolute",
+            left: joyKnob.x,
+            top: joyKnob.y,
+            width: 56, height: 56,
+            borderRadius: 999,
+            transform: "translate(-50%,-50%)",
+            background: "rgba(255,255,255,.25)",
+            border: "1px solid rgba(255,255,255,.55)",
+            backdropFilter: "blur(4px)",
+          }} />
+        )}
+        {/* dot center */}
+        {!joyActive && (
+          <div style={{
+            position: "absolute",
+            left: "50%", top: "50%",
+            transform: "translate(-50%,-50%)",
+            width: 8, height: 8, borderRadius: 999,
+            background: "rgba(255,255,255,.5)"
+          }} />
         )}
       </div>
     </div>
